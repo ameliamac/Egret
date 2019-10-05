@@ -93,7 +93,8 @@ def create_psv_acopf_model(model_data, include_feasibility_slack=False):
                           )
 
     va_bounds = {k: (-pi, pi) for k in bus_attrs['va']}
-    libbus.declare_var_va(model, bus_attrs['names'], initialize=bus_attrs['va'],
+    va_init = {k: radians(va) for k, va in bus_attrs['va'].items() }
+    libbus.declare_var_va(model, bus_attrs['names'], initialize=va_init,
                           bounds=va_bounds
                           )
 
@@ -120,8 +121,8 @@ def create_psv_acopf_model(model_data, include_feasibility_slack=False):
                           )
 
     ### declare the current flows in the branches
-    vr_init = {k: bus_attrs['vm'][k] * pe.cos(bus_attrs['va'][k]) for k in bus_attrs['vm']}
-    vj_init = {k: bus_attrs['vm'][k] * pe.sin(bus_attrs['va'][k]) for k in bus_attrs['vm']}
+    vr_init = {k: bus_attrs['vm'][k] * pe.cos(radians(bus_attrs['va'][k])) for k in bus_attrs['vm']}
+    vj_init = {k: bus_attrs['vm'][k] * pe.sin(radians(bus_attrs['va'][k])) for k in bus_attrs['vm']}
     s_max = {k: branches[k]['rating_long_term'] for k in branches.keys()}
     s_lbub = dict()
     for k in branches.keys():
@@ -137,6 +138,7 @@ def create_psv_acopf_model(model_data, include_feasibility_slack=False):
     pt_init = dict()
     qf_init = dict()
     qt_init = dict()
+    #baseMVA = md.data['system']['baseMVA']
     for branch_name, branch in branches.items():
         from_bus = branch['from_bus']
         to_bus = branch['to_bus']

@@ -155,12 +155,61 @@ def declare_expr_s(model, index_set, coordinate_type=CoordinateType.POLAR):
     expr_set = decl.declare_set('_expr_s', model, index_set)
     m.s = pe.Expression(expr_set)
 
+
     if coordinate_type == CoordinateType.RECTANGULAR:
         for from_bus, to_bus in expr_set:
             m.s[(from_bus,to_bus)] = m.vj[from_bus]*m.vr[to_bus] - m.vr[from_bus]*m.vj[to_bus]
     elif coordinate_type == CoordinateType.POLAR:
         for from_bus, to_bus in expr_set:
             m.s[(from_bus,to_bus)] = m.vm[from_bus]*m.vm[to_bus]*pe.sin(m.va[from_bus]-m.va[to_bus])
+
+
+def declare_var_c(model, index_set, **kwargs):
+    """
+    Create variable for the for the bilinear voltages in SOCP formulation
+    """
+    # if user provides bounds as dict of tuple, translate it
+    # into something that Pyomo understands
+    varname = 'c'
+    if kwargs and 'bounds' in kwargs and isinstance(kwargs['bounds'], dict):
+        d = kwargs['bounds']
+        def _c_bounds(model,j,k):
+            return(d[j,k]) #var c has tuple keys
+        kwargs['bounds'] = _c_bounds
+
+    # create var if index set is None
+    if index_set is None:
+        model.add_component(varname, pe.Var(**kwargs))
+    # transform the index set into a Pyomo Set
+    else:
+        pyomo_index_set = pe.Set(initialize=index_set, ordered=True)
+        model.add_component("_var_{}_index_set".format(varname), pyomo_index_set)
+
+        # now create the var
+        model.add_component(varname, pe.Var(pyomo_index_set, **kwargs))
+
+def declare_var_s(model, index_set, **kwargs):
+    """
+    Create variable for the for the bilinear voltages in SOCP formulation
+    """
+    varname = 's'
+    if kwargs and 'bounds' in kwargs and isinstance(kwargs['bounds'], dict):
+        d = kwargs['bounds']
+        def _c_bounds(model,j,k):
+            return(d[j,k]) #var s has tuple keys
+        kwargs['bounds'] = _c_bounds
+
+    # create var if index set is None
+    if index_set is None:
+        model.add_component(varname, pe.Var(**kwargs))
+    # transform the index set into a Pyomo Set
+    else:
+        pyomo_index_set = pe.Set(initialize=index_set, ordered=True)
+        model.add_component("_var_{}_index_set".format(varname), pyomo_index_set)
+
+        # now create the var
+        model.add_component(varname, pe.Var(pyomo_index_set, **kwargs))
+
 
 
 def declare_eq_branch_current(model, index_set, branches, coordinate_type=CoordinateType.RECTANGULAR):
@@ -587,3 +636,116 @@ def declare_ineq_angle_diff_branch_lbub(model, index_set,
             m.ineq_angle_diff_branch_ub[branch_name] = \
                 pe.atan(m.vj[from_bus] / m.vr[from_bus]) \
                 - pe.atan(m.vj[to_bus] / m.vr[to_bus]) <= branches[branch_name]['angle_diff_max']
+
+
+def declare_eq_branch_power_socp(model, index_set, branches, branch_attrs, coordinate_type=CoordinateType.POLAR):
+    """
+    Create the equality constraints for the real and reactive power
+    in the branch with SOCP variables s,c,w
+    """
+    m = model
+
+    bus_pairs = zip_items(branch_attrs['from_bus'],branch_attrs['to_bus'])
+    unique_bus_pairs = list(set([val for idx,val in bus_pairs.items()]))
+    #exprs are not needed because we have variables for these now
+    # declare_expr_c(model,unique_bus_pairs,coordinate_type)
+    # declare_expr_s(model,unique_bus_pairs,coordinate_type)
+
+    con_set = decl.declare_set("_con_eq_branch_power_set", model, index_set)
+
+    m.eq_pf_branch = pe.Constraint(con_set)
+    m.eq_pt_branch = pe.Constraint(con_set)
+    m.eq_qf_branch = pe.Constraint(con_set)
+    m.eq_qt_branch = pe.Constraint(con_set)
+    for branch_name in con_set:
+        branch = branches[branch_name]
+
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        #These are now represented by w
+        # if coordinate_type == CoordinateType.POLAR:
+        #     vmsq_from_bus = m.vm[from_bus]**2
+        #     vmsq_to_bus = m.vm[to_bus] ** 2
+        # elif coordinate_type == CoordinateType.RECTANGULAR:
+        #     vmsq_from_bus = m.vr[from_bus]**2 + m.vj[from_bus]**2
+        #     vmsq_to_bus = m.vr[to_bus] ** 2 + m.vj[to_bus] ** 2
+
+        g = tx_calc.calculate_conductance(branch)
+        b = tx_calc.calculate_susceptance(branch)
+        bc = branch['charging_susceptance']
+        tau = 1.0
+        shift = 0.0
+
+        if branch['branch_type'] == 'transformer':
+            tau = branch['transformer_tap_ratio']
+            shift = math.radians(branch['transformer_phase_shift'])
+
+        g11 = g / tau ** 2
+        g12 = g * math.cos(shift) / tau
+        g21 = g * math.sin(shift) / tau
+        g22 = g
+
+        b11 = (b + bc / 2) / tau ** 2
+        b12 = b * math.cos(shift) / tau
+        b21 = b * math.sin(shift) / tau
+        b22 = b + bc / 2
+
+        m.eq_pf_branch[branch_name] = \
+            m.pf[branch_name] == \
+            g11 * m.w[from_bus] - \
+            (g12 * m.c[(from_bus,to_bus)] +
+             g21 * m.s[(from_bus,to_bus)] +
+             b12 * m.s[(from_bus,to_bus)] -
+             b21 * m.c[(from_bus,to_bus)])
+
+        m.eq_pt_branch[branch_name] = \
+            m.pt[branch_name] == \
+            g22 * m.w[to_bus] - \
+            (g12 * m.c[(from_bus,to_bus)] +
+             g21 * m.s[(from_bus,to_bus)] -
+             b12 * m.s[(from_bus,to_bus)] +
+             b21 * m.c[(from_bus,to_bus)])
+
+        m.eq_qf_branch[branch_name] = \
+            m.qf[branch_name] == \
+            -b11 * m.w[from_bus] + \
+            (b12 * m.c[(from_bus,to_bus)] +
+             b21 * m.s[(from_bus,to_bus)] -
+             g12 * m.s[(from_bus,to_bus)] +
+             g21 * m.c[(from_bus,to_bus)])
+
+        m.eq_qt_branch[branch_name] = \
+            m.qt[branch_name] == \
+            -b22 * m.w[to_bus] + \
+            (b12 * m.c[(from_bus,to_bus)] +
+             b21 * m.s[(from_bus,to_bus)] +
+             g12 * m.s[(from_bus,to_bus)] -
+             g21 * m.c[(from_bus,to_bus)])
+
+
+def declare_socp_scw(model, index_set, branches, branch_attrs):
+    """
+    Create the SOCP constraints c_bk^2+s_bk^2<= w_bb*w_kk
+    """
+    m = model
+
+    con_set = decl.declare_set("_con_socp_scw_set", model, index_set)
+    m.socp_scw = pe.Constraint(con_set)
+
+    bus_pairs = zip_items(branch_attrs['from_bus'],branch_attrs['to_bus'])
+    unique_bus_pairs = list(set([val for idx,val in bus_pairs.items()]))
+
+    for branch_name in con_set:
+        branch = branches[branch_name]
+        from_bus = branch['from_bus']
+        to_bus = branch['to_bus']
+
+        m.socp_scw[branch_name] = \
+        m.c[(from_bus,to_bus)]**2 + m.s[(from_bus,to_bus)]**2 <= \
+        m.w[from_bus] * m.w[to_bus]
+
+
+
+
+

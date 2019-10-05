@@ -72,6 +72,15 @@ def declare_var_ql(model, index_set, **kwargs):
     decl.declare_var('ql', model=model, index_set=index_set, **kwargs)
 
 
+def declare_var_w(model, index_set, **kwargs):
+    """
+    Create variable for the for the squared voltages in SOCP formulation
+    """
+
+    decl.declare_var('w', model=model, index_set=index_set, **kwargs)
+
+
+
 def declare_expr_shunt_power_at_bus(model, index_set, shunt_attrs,
                                     coordinate_type=CoordinateType.POLAR):
     """
@@ -417,3 +426,99 @@ def declare_ineq_vm_bus_lbub(model, index_set, buses, coordinate_type=Coordinate
                 buses[bus_name]['v_min']**2 <= m.vr[bus_name]**2 + m.vj[bus_name]**2
             m.ineq_vm_bus_ub[bus_name] = \
                 m.vr[bus_name]**2 + m.vj[bus_name]**2 <= buses[bus_name]['v_max']**2
+
+
+
+def declare_eq_p_balance_socp(model, index_set,
+                         bus_p_loads,
+                         gens_by_bus,
+                         bus_gs_fixed_shunts,
+                         inlet_branches_by_bus, outlet_branches_by_bus,
+                         coordinate_type=CoordinateType.RECTANGULAR,
+                         **rhs_kwargs):
+    """
+    Create the equality constraints for the real power balance
+    at a bus using the variables for real power flows, respectively
+    with SOCP variable w for voltage
+
+    NOTE: Equation build orientates constants to the RHS in order to compute the correct dual variable sign
+    """
+
+    m = model
+    con_set = decl.declare_set('_con_eq_p_balance', model, index_set)
+
+    m.eq_p_balance = pe.Constraint(con_set)
+
+    for bus_name in con_set:
+        p_expr = -sum([m.pf[branch_name] for branch_name in outlet_branches_by_bus[bus_name]])
+        p_expr -= sum([m.pt[branch_name] for branch_name in inlet_branches_by_bus[bus_name]])
+
+        if bus_gs_fixed_shunts[bus_name] != 0.0:
+            # if coordinate_type == CoordinateType.RECTANGULAR:
+            #     vmsq = m.vr[bus_name] ** 2 + m.vj[bus_name] ** 2
+            # elif coordinate_type == CoordinateType.POLAR:
+            #     vmsq = m.vm[bus_name] ** 2
+            p_expr -= bus_gs_fixed_shunts[bus_name] * m.w[bus_name]
+
+        if bus_p_loads[bus_name] != 0.0: # only applies to fixed loads, otherwise may cause an error
+            p_expr -= m.pl[bus_name]
+
+        if rhs_kwargs:
+            for idx, val in rhs_kwargs.items():
+                if idx == 'include_feasibility_slack_pos':
+                    p_expr -= eval("m." + val)[bus_name]
+                if idx == 'include_feasibility_slack_neg':
+                    p_expr += eval("m." + val)[bus_name]
+
+        for gen_name in gens_by_bus[bus_name]:
+            p_expr += m.pg[gen_name]
+
+        m.eq_p_balance[bus_name] = \
+            p_expr == 0.0
+
+def declare_eq_q_balance_socp(model, index_set,
+                         bus_q_loads,
+                         gens_by_bus,
+                         bus_bs_fixed_shunts,
+                         inlet_branches_by_bus, outlet_branches_by_bus,
+                         coordinate_type=CoordinateType.RECTANGULAR,
+                         **rhs_kwargs):
+    """
+    Create the equality constraints for the reactive power balance
+    at a bus using the variables for reactive power flows, respectively
+    with SOCP variable w for voltage
+
+    NOTE: Equation build orientates constants to the RHS in order to compute the correct dual variable sign
+    """
+    m = model
+    con_set = decl.declare_set('_con_eq_q_balance', model, index_set)
+
+    m.eq_q_balance = pe.Constraint(con_set)
+
+    for bus_name in con_set:
+        q_expr = -sum([m.qf[branch_name] for branch_name in outlet_branches_by_bus[bus_name]])
+        q_expr -= sum([m.qt[branch_name] for branch_name in inlet_branches_by_bus[bus_name]])
+
+        if bus_bs_fixed_shunts[bus_name] != 0.0:
+        #     if coordinate_type == CoordinateType.RECTANGULAR:
+        #         vmsq = m.vr[bus_name] ** 2 + m.vj[bus_name] ** 2
+        #     elif coordinate_type == CoordinateType.POLAR:
+        #         vmsq = m.vm[bus_name] ** 2
+            q_expr += bus_bs_fixed_shunts[bus_name] * m.w[bus_name]
+
+        if bus_q_loads[bus_name] != 0.0: # only applies to fixed loads, otherwise may cause an error
+            q_expr -= m.ql[bus_name]
+
+        if rhs_kwargs:
+            for idx, val in rhs_kwargs.items():
+                if idx == 'include_feasibility_slack_pos':
+                    q_expr -= eval("m." + val)[bus_name]
+                if idx == 'include_feasibility_slack_neg':
+                    q_expr += eval("m." + val)[bus_name]
+
+        for gen_name in gens_by_bus[bus_name]:
+            q_expr += m.qg[gen_name]
+
+        m.eq_q_balance[bus_name] = \
+            q_expr == 0.0
+
