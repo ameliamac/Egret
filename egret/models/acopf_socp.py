@@ -298,12 +298,13 @@ if __name__ == '__main__':
     path = os.path.dirname(__file__)
     #filename = 'pglib_opf_case3_lmbd.m'
     #filename = 'pglib_opf_case5_pjm.m'
-    filename = 'pglib_opf_case14_ieee.m'
+    #filename = 'pglib_opf_case14_ieee.m'
+    filename = 'pglib_opf_case118_ieee.m'
     matpower_file = os.path.join(path, '../../downloads/pglib-opf-master/', filename)
     model_data = create_ModelData(matpower_file)
-
-    model,md = create_socp_acopf_model(model_data)
-    m, results = _solve_model(model,'ipopt',solver_tee = True)
+    print(len(dict(model_data.elements(element_type='generator')))) #will give the number of generators 
+    #model,md = create_socp_acopf_model(model_data)
+    #m, results = _solve_model(model,'ipopt',solver_tee = True)
 
     #model.pprint()
 
